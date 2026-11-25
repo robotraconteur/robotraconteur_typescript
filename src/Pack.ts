@@ -702,6 +702,7 @@ export function unpackElement(e: MessageElement, t: TypeDefinition, scope: Servi
     switch (r.kind)
     {
     case "enum":
+        if (e.elementType !== DataTypes.int32_t || (e.data as Int32Array).length !== 1) throw dataError("Invalid enum value for " + e.elementName);
         return (e.data as Int32Array)[0];
     case "struct":
         return unpackFields(e.castNested(DataTypes.structure_t).elements, r, ctx);
@@ -738,8 +739,8 @@ function unpackNumeric(e: MessageElement, t: TypeDefinition, p: PrimitiveInfo): 
     if (t.array === "multidimarray")
     {
         const l = e.castNested(DataTypes.multidimarray_t).elements;
-        const dims = findData(l, "dims") as Uint32Array;
-        const array = findData(l, "array") as NumericArray;
+        const dims = findData(l, "dims", DataTypes.uint32_t) as Uint32Array;
+        const array = findData(l, "array", p.type) as NumericArray;
         if (dims.reduce((a, b) => a * b, 1) * p.stride !== array.length) throw dataError("Array dimension mismatch");
         return { dims, array };
     }
@@ -754,10 +755,23 @@ function unpackNumeric(e: MessageElement, t: TypeDefinition, p: PrimitiveInfo): 
     return scalarFromArray(a, p, 0);
 }
 
-function findData(l: MessageElement[], name: string): unknown
+/** The dims of a received multidimensional array, checked against its element count and the declared dimensions */
+function unpackDims(l: MessageElement[], count: number, t: TypeDefinition): Uint32Array
+{
+    const e = l.find((x) => x.elementName === "dims");
+    if (!e) throw dataError("Message element not found: dims");
+    if (e.elementType !== DataTypes.uint32_t) throw dataError("Unexpected data type for dims");
+    const dims = e.data as Uint32Array;
+    if (dims.reduce((a, b) => a * b, 1) !== count) throw dataError("Array dimension mismatch");
+    verifyDims(dims, t);
+    return dims;
+}
+
+function findData(l: MessageElement[], name: string, type?: DataTypes): unknown
 {
     const e = l.find((x) => x.elementName === name);
     if (!e) throw dataError("Message element not found: " + name);
+    if (type !== undefined && e.elementType !== type) throw dataError("Unexpected data type for " + name);
     return e.data;
 }
 
@@ -790,7 +804,8 @@ function unpackPod(e: MessageElement, t: TypeDefinition, r: ResolvedType, ctx: T
         const l = e.castNested(DataTypes.pod_multidimarray_t).elements;
         const a = l.find((x) => x.elementName === "array");
         if (!a) throw dataError("Message element not found: array");
-        return { dims: findData(l, "dims"), array: unpackPodArray(a, r, ctx) };
+        const array = unpackPodArray(a, r, ctx);
+        return { dims: unpackDims(l, array.length, t), array };
     }
     const items = unpackPodArray(e, r, ctx);
     if (t.array)
@@ -827,7 +842,8 @@ function unpackNamedArray(e: MessageElement, t: TypeDefinition, r: ResolvedType,
         const l = e.castNested(DataTypes.namedarray_multidimarray_t).elements;
         const a = l.find((x) => x.elementName === "array");
         if (!a) throw dataError("Message element not found: array");
-        return { dims: findData(l, "dims"), array: view ? unpackNamedArrayView(a, r, ctx) : unpackNamedArrayItems(a, r, ctx) };
+        const array = view ? unpackNamedArrayView(a, r, ctx) : unpackNamedArrayItems(a, r, ctx);
+        return { dims: unpackDims(l, array.length, t), array };
     }
     if (view)
     {

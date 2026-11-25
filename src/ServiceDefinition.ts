@@ -270,7 +270,11 @@ export function parseTypeDefinition(s: string, line_number = 0): TypeDefinition
     if (!m) throw new ServiceDefinitionParseError(`Could not parse type "${s.trim()}"`, line_number);
 
     const t: TypeDefinition = { type: m[1]! };
-    const dims = (v: string) => v.split(",").map((x) => parseInt(x, 10));
+    const dims = (v: string) => v.split(",").map((x) =>
+    {
+        if (!/^[0-9]+$/.test(x)) throw new ServiceDefinitionParseError(`Could not parse type "${s.trim()}"`, line_number);
+        return parseInt(x, 10);
+    });
     if (m[2]) Object.assign(t, { array: "array", arrayLength: [0], arrayVarLength: true });
     else if (m[3]) Object.assign(t, { array: "array", arrayLength: dims(m[3]), arrayVarLength: false });
     else if (m[4]) Object.assign(t, { array: "array", arrayLength: dims(m[4]), arrayVarLength: true });
@@ -348,11 +352,13 @@ function parseMember(kind: MemberKind, line: Line): MemberDefinition
     return withDoc(member, line.doc);
 }
 
-function versionAtLeast(version: string | undefined, major: number, minor: number): boolean
+function versionAtLeast(version: string | undefined, major: number, minor: number, patch = 0): boolean
 {
     if (!version) return false;
     const v = version.split(".").map((x) => parseInt(x, 10));
-    return v[0]! > major || (v[0] === major && (v[1] ?? 0) >= minor);
+    if (v[0] !== major) return v[0]! > major;
+    if ((v[1] ?? 0) !== minor) return (v[1] ?? 0) > minor;
+    return (v[2] ?? 0) >= patch;
 }
 
 function qualifyWithUsing(name: string, def: ServiceDefinition): string
@@ -417,7 +423,7 @@ function parseBlock(keyword: string, start: Line, lines: Line[], pos: { i: numbe
         const end = R_END.exec(line.text);
         if (end)
         {
-            if (end[1] !== undefined && (end[1] !== keyword || versionAtLeast(def.stdVer, 0, 9)))
+            if (end[1] !== undefined && (end[1] !== keyword || versionAtLeast(def.stdVer, 0, 9, 2)))
             {
                 throw new ServiceDefinitionParseError("Block terminator does not match start", line.number);
             }

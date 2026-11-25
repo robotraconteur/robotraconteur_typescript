@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { DataTypes, MessageEntryType, MessageErrorType } from "../../src/DataTypes.js";
+import { RobotRaconteurError } from "../../src/Error.js";
 import { deserializeMessage, Message, MessageElement, MessageEntry, serializeMessage } from "../../src/Message.js";
 import { NodeID } from "../../src/NodeID.js";
 import { parseConnectionUrl } from "../../src/Transport.js";
@@ -132,6 +133,72 @@ test("deserialize rejects corrupted messages", () =>
     }
 });
 
+test("serialize rejects a header longer than 65535 bytes", () =>
+{
+    // Each string fits in its uint16 length, but the header size does not, as in Core MessageHeader::ComputeSize
+    const m = sample();
+    m.header.senderNodeName = "a".repeat(30000);
+    m.header.metaData = "b".repeat(40000);
+    assert.throws(() => serializeMessage(m), RangeError);
+});
+
+test("deserialize limits the nesting depth of element lists to 512, as Core", () =>
+{
+    const nested = (levels: number) =>
+    {
+        let e = new MessageElement("v", DataTypes.int32_t, Int32Array.of(1));
+        for (let i = 0; i < levels; i++) e = MessageElement.nested("v", DataTypes.list_t, "", [e]);
+        const m = new Message();
+        const entry = new MessageEntry(MessageEntryType.FunctionCallReq, "f");
+        entry.addElement(e);
+        m.entries.push(entry);
+        return serializeMessage(m);
+    };
+    assert.equal(deserializeMessage(nested(512)).entries[0]!.elements.length, 1);
+    assert.throws(() => deserializeMessage(nested(513)), RangeError);
+});
+
+test("unknown element types are reported as malformed messages or data type errors", () =>
+{
+    const m = new Message();
+    const entry = new MessageEntry(MessageEntryType.FunctionCallReq, "f");
+    entry.addElement(new MessageElement("v", DataTypes.int32_t, Int32Array.of(1)));
+    m.entries.push(entry);
+    const b = serializeMessage(m);
+    // The element's name ("v", length 1) is followed by its type
+    let i = 0;
+    while (!(b[i] === 1 && b[i + 1] === 0 && b[i + 2] === 0x76)) i++;
+    b[i + 3] = 50;
+    assert.throws(() => deserializeMessage(b), RangeError);
+
+    entry.elements = [new MessageElement("v", 50 as DataTypes, Int32Array.of(1))];
+    assert.throws(() => serializeMessage(m), (e: RobotRaconteurError) => e.errorName === "RobotRaconteur.DataTypeError");
+});
+
+test("only the nested element types Core reads are accepted", () =>
+{
+    const message = (type: number) =>
+    {
+        const m = new Message();
+        const e = new MessageEntry(MessageEntryType.FunctionCallReq, "f");
+        e.addElement(MessageElement.nested("x", type as DataTypes, "t", [new MessageElement("a", DataTypes.int32_t, Int32Array.of(1))]));
+        m.entries.push(e);
+        return serializeMessage(m);
+    };
+    for (const type of [101, 102, 103, 108, 109, 110, 111, 115, 116, 117])
+    {
+        const el = deserializeMessage(message(type)).entries[0]!.elements[0]!;
+        assert.equal(el.elementType, type);
+        assert.equal(el.elementTypeName, "t");
+    }
+    // As Core's MessageElement::Read: object_t, varvalue_t, varobject_t, enum_t, namedtype_t, namedarray_t and
+    // undefined types are errors
+    for (const type of [104, 105, 106, 107, 112, 113, 114, 118, 200, 1000, 65535])
+    {
+        assert.throws(() => deserializeMessage(message(type)), RangeError, String(type));
+    }
+});
+
 test("NodeID parsing and formatting", () =>
 {
     const s = "{00112233-4455-6677-8899-aabbccddeeff}";
@@ -162,8 +229,16 @@ test("connection URL parsing", () =>
     assert.equal(old.nodename, "node");
     assert.equal(old.service, "service");
 
-    for (const bad of ["nonsense", "rr+ws://localhost", "rr+ws://localhost?nodename=x", "rr+ws://localhost?service=s&nodename=1bad"])
+    for (const bad of ["nonsense", "rr+ws://localhost", "rr+ws://localhost?nodename=x", "rr+ws://localhost?service=s&nodename=1bad", "rr+ws://localhost?service=a%zz"])
     {
-        assert.throws(() => parseConnectionUrl(bad), Error, bad);
+        assert.throws(() => parseConnectionUrl(bad), (e: unknown) => e instanceof RobotRaconteurError && e.errorCode === MessageErrorType.ConnectionError, bad);
+    }
+});
+
+test("connection URLs with an invalid node ID give a connection URL error", () =>
+{
+    for (const bad of ["rr+tcp://localhost:1/?nodeid=x&service=s", "rr+ws://localhost?service=s&nodeid={0011}", "tcp://localhost:1/{x}/s"])
+    {
+        assert.throws(() => parseConnectionUrl(bad), (e: unknown) => e instanceof RobotRaconteurError && e.errorCode === MessageErrorType.ConnectionError && e.message === "Invalid connection URL", bad);
     }
 });

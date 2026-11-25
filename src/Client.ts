@@ -784,6 +784,8 @@ export class ServiceStub
         const early = this.early_pipes.get(key);
         if (early) return early;
         if (!this.connecting_pipes.some((x) => x.name === name && (x.index === -1 || x.index === index))) return undefined;
+        // Each pending connect can create at most one endpoint before its reply arrives, as in Core
+        if (this.early_pipes.size >= this.connecting_pipes.length) return undefined;
         const m = this.context.findMember(this.objectType, name);
         if (!m || m.kind !== "pipe") return undefined;
         const h = this.createPipeHandle(m, index, this.isPipeUnreliable(name));
@@ -1080,14 +1082,14 @@ export class ClientContext
             if (!d || !o) return false;
             return o.implements.some((n) => check(n.includes(".") ? n : d.name + "." + n, seen));
         };
-        if (!check(object_type, new Set())) throw error(MessageErrorType.ObjectNotFound, "ServiceError", "Invalid object type");
+        if (!check(object_type, new Set())) throw error(MessageErrorType.ServiceError, "ServiceError", "Invalid object type");
     }
 
     /** The service definition of a qualified object type. Throws if the connection does not have it */
     serviceDefForType(object_type: string): ServiceDefinition
     {
         const d = this.types.defs.get(object_type.substring(0, object_type.lastIndexOf(".")));
-        if (!d) throw error(MessageErrorType.ObjectNotFound, "ServiceError", "Could not find service definition for " + object_type);
+        if (!d) throw error(MessageErrorType.ServiceError, "ServiceError", "Could not find service definition for " + object_type);
         return d;
     }
 
@@ -1224,9 +1226,14 @@ export class ClientContext
         const first = m.entries[0];
         if (first?.entryType === MessageEntryType.ConnectClientRet || first?.entryType === MessageEntryType.ConnectClientCombinedRet)
         {
-            this.remoteEndpoint = m.header.senderEndpoint;
-            this.remoteNodeID = m.header.senderNodeID;
-            this.remoteNodeName = m.header.senderNodeName;
+            // Accept the service's identity only from the first connect reply, and only if it matches the
+            // NodeID the connection URL asked for (when it asked for one)
+            if (this.remoteEndpoint === 0 && (this.remoteNodeID.isAnyNode || this.remoteNodeID.equals(m.header.senderNodeID)))
+            {
+                this.remoteEndpoint = m.header.senderEndpoint;
+                this.remoteNodeID = m.header.senderNodeID;
+                this.remoteNodeName = m.header.senderNodeName;
+            }
         }
 
         for (const e of m.entries)

@@ -17,7 +17,7 @@ import { test } from "node:test";
 
 import { DataTypes } from "../../src/DataTypes.js";
 import { RobotRaconteurError } from "../../src/Error.js";
-import { deserializeMessage, Message, MessageEntry, serializeMessage } from "../../src/Message.js";
+import { deserializeMessage, Message, MessageElement, MessageEntry, serializeMessage } from "../../src/Message.js";
 import { packElement, TypeContext, unpackElement, VarValue } from "../../src/Pack.js";
 import { parseServiceDefinition, parseTypeDefinition, ServiceDefinition } from "../../src/ServiceDefinition.js";
 import { newStructure } from "../../src/ServiceTypes.js";
@@ -126,6 +126,31 @@ test("multidimensional arrays", () =>
     roundTrip("cdouble[*]", { dims: Uint32Array.of(1, 1), array: Float64Array.of(1, 2) });
     assert.throws(() => roundTrip("double[*]", { dims: [3], array: [1] }));
     assert.throws(() => roundTrip("double[3,3]", m));
+});
+
+test("unpacking checks the dims of pod and named array multidimensional arrays", () =>
+{
+    /** Pack a valid value, then replace the dims sent with it */
+    const withDims = (type: string, value: unknown, dims: MessageElement) =>
+    {
+        const t = parseTypeDefinition(type);
+        const e = packElement("v", t, value, def, ctx);
+        const l = e.castNested().elements;
+        l[l.findIndex((x) => x.elementName === "dims")] = dims;
+        return () => unpackElement(e, t, def, ctx);
+    };
+    const pods = { dims: Uint32Array.of(2, 1), array: [{ i: 1 }, { i: 2 }] };
+    const vecs = { dims: Uint32Array.of(2, 1), array: [{ x: 1, y: 2 }, { x: 3, y: 4 }] };
+    const dims = (...d: number[]) => new MessageElement("dims", DataTypes.uint32_t, Uint32Array.from(d));
+    for (const [type, value] of [["inner[*]", pods], ["inner[2,1]", pods], ["vec[*]", vecs], ["vec[2,1]", vecs]] as const)
+    {
+        assert.deepEqual((withDims(type, value, dims(2, 1))() as { dims: Uint32Array }).dims, Uint32Array.of(2, 1));
+        // The dims must give the number of elements, and match fixed dimensions
+        assert.throws(withDims(type, value, dims(3, 1)), RobotRaconteurError);
+        assert.throws(withDims(type, value, new MessageElement("dims", DataTypes.int32_t, Int32Array.of(2, 1))), RobotRaconteurError);
+    }
+    assert.throws(withDims("inner[2,1]", pods, dims(1, 2)), RobotRaconteurError);
+    assert.throws(withDims("vec[2,1]", vecs, dims(1, 2)), RobotRaconteurError);
 });
 
 test("containers", () =>
@@ -242,6 +267,18 @@ test("varvalue", () =>
     const map = new Map([["k", new VarValue("a", "string")]]);
     rt(new VarValue(map, "varvalue{string}"), new VarValue(map, "varvalue{string}"));
     assert.throws(() => rt(5, null));
+});
+
+test("unpacking checks the element types of enums and multidimensional arrays", () =>
+{
+    // As Core's CastData, which throws DataTypeException
+    const t = (s: string) => parseTypeDefinition(s);
+    assert.equal(unpackElement(new MessageElement("v", DataTypes.int32_t, Int32Array.of(2)), t("e1"), def, ctx), 2);
+    assert.throws(() => unpackElement(new MessageElement("v", DataTypes.uint8_t, Uint8Array.of(1)), t("e1"), def, ctx), RobotRaconteurError);
+    assert.throws(() => unpackElement(new MessageElement("v", DataTypes.int32_t, new Int32Array(0)), t("e1"), def, ctx), RobotRaconteurError);
+    const md = (dims: MessageElement, array: MessageElement) => MessageElement.nested("v", DataTypes.multidimarray_t, "", [dims, array]);
+    assert.throws(() => unpackElement(md(new MessageElement("dims", DataTypes.uint32_t, Uint32Array.of(2)), new MessageElement("array", DataTypes.int32_t, Int32Array.of(1, 2))), t("double[*]"), def, ctx), RobotRaconteurError);
+    assert.throws(() => unpackElement(md(new MessageElement("dims", DataTypes.void_t, null), new MessageElement("array", DataTypes.double_t, Float64Array.of(1, 2))), t("double[*]"), def, ctx), RobotRaconteurError);
 });
 
 test("unknown types are rejected", () =>

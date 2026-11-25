@@ -41,6 +41,18 @@ function urlError(): RobotRaconteurError
     return new RobotRaconteurError(MessageErrorType.ConnectionError, "RobotRaconteur.ConnectionError", "Invalid connection URL");
 }
 
+function urlNodeID(s: string): NodeID
+{
+    try
+    {
+        return new NodeID(s);
+    }
+    catch
+    {
+        throw urlError();
+    }
+}
+
 /** Parse a Robot Raconteur connection URL such as rr+ws://localhost:22222?service=my_service */
 export function parseConnectionUrl(url: string): ParsedConnectionUrl
 {
@@ -59,7 +71,7 @@ export function parseConnectionUrl(url: string): ParsedConnectionUrl
         if (m[5] || parts.length !== 2) throw urlError();
         const noden = parts[0]!;
         const is_id = /[{[]/.test(noden);
-        return { scheme, host, port, path: "/", nodeid: is_id ? new NodeID(noden) : NodeID.Any, nodename: is_id ? "" : noden, service: parts[1]! };
+        return { scheme, host, port, path: "/", nodeid: is_id ? urlNodeID(noden) : NodeID.Any, nodename: is_id ? "" : noden, service: parts[1]! };
     }
 
     const params = new Map<string, string>();
@@ -68,7 +80,16 @@ export function parseConnectionUrl(url: string): ParsedConnectionUrl
         if (q === "") continue;
         const kv = q.split("=");
         if (kv.length !== 2 || !kv[0] || !kv[1]) throw urlError();
-        params.set(kv[0], decodeURIComponent(kv[1]));
+        let value: string;
+        try
+        {
+            value = decodeURIComponent(kv[1]);
+        }
+        catch
+        {
+            throw urlError();
+        }
+        params.set(kv[0], value);
     }
     const service = params.get("service");
     if (!service || service.trim() === "") throw urlError();
@@ -76,10 +97,9 @@ export function parseConnectionUrl(url: string): ParsedConnectionUrl
     const nodename = params.get("nodename") ?? "";
     if (nodename !== "" && !/^[a-zA-Z][a-zA-Z0-9_.-]*$/.test(nodename)) throw urlError();
     const nodeid = params.get("nodeid");
-    return { scheme, host, port, path: m[4] ? m[4] : "/", nodeid: nodeid ? new NodeID(nodeid) : NodeID.Any, nodename, service };
+    return { scheme, host, port, path: m[4] ? m[4] : "/", nodeid: nodeid ? urlNodeID(nodeid) : NodeID.Any, nodename, service };
 }
 
-/** One end of a client or service session, identified by a number unique within the node */
 /** Something messages are routed to, such as a client. Needed only to write a transport */
 export interface Endpoint
 {
@@ -91,7 +111,6 @@ export interface Endpoint
     transportConnectionClosed(): void;
 }
 
-/** A connected transport stream used by one client */
 /** A connection to another node made by a transport. Needed only to write a transport */
 export interface ITransportConnection
 {

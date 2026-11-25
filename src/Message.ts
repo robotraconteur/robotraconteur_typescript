@@ -165,6 +165,7 @@ class ArrayBinaryWriter
 
     patchU16(at: number, v: number): void
     {
+        if (v > 0xffff) throw new RangeError("Value exceeds maximum message field length");
         this.view.setUint16(at, v, true);
     }
 
@@ -202,7 +203,7 @@ function writeElement(w: ArrayBinaryWriter, e: MessageElement): void
     else if (d !== null)
     {
         const info = primitivesByType.get(e.elementType);
-        if (!info) throw new TypeError("Invalid numeric message element type");
+        if (!info) throw dataError("Invalid numeric message element type");
         count = d.byteLength / info.size;
         w.bytes(new Uint8Array(d.buffer, d.byteOffset, d.byteLength));
     }
@@ -298,7 +299,17 @@ class ArrayBinaryReader
     }
 }
 
-function readElement(r: ArrayBinaryReader, limit: number): MessageElement
+/** The deepest nesting of message element lists accepted when reading a message, as Core's MessageMaxNestingDepth */
+const MAX_NESTING_DEPTH = 512;
+
+/** The nested element list types Core reads. Others, such as object_t and varvalue_t, are not sent */
+const nested_types: ReadonlySet<DataTypes> = new Set([
+    DataTypes.structure_t, DataTypes.vector_t, DataTypes.dictionary_t, DataTypes.multidimarray_t, DataTypes.list_t,
+    DataTypes.pod_t, DataTypes.pod_array_t, DataTypes.pod_multidimarray_t, DataTypes.namedarray_array_t,
+    DataTypes.namedarray_multidimarray_t
+]);
+
+function readElement(r: ArrayBinaryReader, limit: number, depth = 0): MessageElement
 {
     const end = r.sectionEnd(limit);
     const name = r.string16(end);
@@ -314,14 +325,16 @@ function readElement(r: ArrayBinaryReader, limit: number): MessageElement
     }
     else if (type >= DataTypes.structure_t)
     {
+        if (!nested_types.has(type)) throw new RangeError("Unknown message element data type: " + type);
+        if (depth >= MAX_NESTING_DEPTH) throw new RangeError("Message element nesting depth exceeds maximum");
         const elements: MessageElement[] = [];
-        for (let i = 0; i < count; i++) elements.push(readElement(r, end));
+        for (let i = 0; i < count; i++) elements.push(readElement(r, end, depth + 1));
         data = new MessageElementNestedElementList(type, type_name, elements);
     }
     else if (type !== DataTypes.void_t)
     {
         const info = primitivesByType.get(type);
-        if (!info) throw new TypeError("Unknown message element data type: " + type);
+        if (!info) throw new RangeError("Unknown message element data type: " + type);
         const b = r.take(count * info.size, end);
         // Copy so that the typed array is correctly aligned and does not hold the receive buffer
         data = new info.ctor(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);

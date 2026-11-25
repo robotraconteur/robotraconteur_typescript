@@ -122,7 +122,7 @@ async function openWebSocketStream(ctor: WebSocketStreamConstructor, url: string
     }
     catch
     {
-        throw connectionError("Could not connect to WebSocket");
+        throw connectionError(abort.signal.aborted ? "Timed out connecting to WebSocket" : "Could not connect to WebSocket");
     }
     finally
     {
@@ -182,7 +182,7 @@ export class BrowserWebSocketTransport implements Transport, StreamTransportPare
     /** @param node The node the transport belongs to. Register the transport with it too */
     constructor(public node: RobotRaconteurNode) {}
 
-    /** True for rr+ws and rr+wss URLs */
+    /** True for tcp, rr+tcp, rr+ws, and rr+wss URLs */
     canConnectService(url: string): boolean
     {
         return ["tcp", "rr+tcp", "rr+ws", "rr+wss"].includes(parseConnectionUrl(url).scheme);
@@ -193,7 +193,8 @@ export class BrowserWebSocketTransport implements Transport, StreamTransportPare
     {
         const u = parseConnectionUrl(url);
         if (u.host === "") throw connectionError("Invalid connection URL for WebSocket");
-        const ws_url = url.replace(u.scheme + "://", (u.scheme.endsWith("wss") ? "wss" : "ws") + "://");
+        // Use the parsed host and port, which has the scheme's default port, such as 48653 for rr+tcp
+        const ws_url = url.replace(/^[^:]+:\/\/[^/?]*/, (u.scheme.endsWith("wss") ? "wss" : "ws") + "://" + u.host + (u.port > 0 ? ":" + u.port : ""));
 
         const c = new StreamConnection(this, u.nodeid, u.nodename, endpoint);
         const stream_ctor = this.useWebSocketStream ? webSocketStreamConstructor() : undefined;

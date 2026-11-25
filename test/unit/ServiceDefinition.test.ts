@@ -155,6 +155,18 @@ test("parser rejects malformed definitions", () =>
     for (const s of bad) assert.throws(() => parseServiceDefinition(s), Error, s);
 });
 
+test("a keyword after end is allowed before stdver 0.9.2, as in Core", () =>
+{
+    for (const v of ["0.9", "0.9.1"])
+    {
+        const d = parseServiceDefinition(`service test.svc\nstdver ${v}\nstruct a\nfield double b\nend struct\nobject c\nproperty double d\nend object\n`);
+        assert.equal(d.structures.length, 1, v);
+        assert.equal(d.objects.length, 1, v);
+        assert.throws(() => parseServiceDefinition(`service test.svc\nstdver ${v}\nstruct a\nfield double b\nend object\n`), Error, v);
+    }
+    assert.throws(() => parseServiceDefinition("service test.svc\nstdver 0.9.2\nstruct a\nfield double b\nend struct\n"), Error);
+});
+
 test("the validators check that entries are in the order Core requires", () =>
 {
     const object = "object o\nproperty double p\nend\n";
@@ -180,9 +192,35 @@ function verifies(body: string): void
     verifyServiceDefinition(parseServiceDefinition(svc(body)));
 }
 
+test("array dimensions must all be numbers", () =>
+{
+    for (const t of ["double[3,,4]", "double[,3]", "double[3,4,]"]) assert.throws(() => parseTypeDefinition(t), (e: Error) => e.name === "ServiceDefinitionParseError", t);
+    assert.deepEqual(parseTypeDefinition("double[3,4]").arrayLength, [3, 4]);
+});
+
 test("validators accept a valid definition", () =>
 {
     verifies("constant int32 c1 5\nenum e\na = 1, b\nend\nstruct s\nfield double[] d\nend\nobject o\nproperty s p\nfunction e f(double[] x)\nend");
+});
+
+test("struct constants refer to the constants of their own scope, as in Core", () =>
+{
+    // Core VerifyConstantStruct is given the entry's constants for constants inside an object or struct
+    verifies("object o\nconstant int32 a 1\nconstant struct s {f: a}\nend");
+    verifies("struct t\nconstant int32 a 1\nconstant struct s {f: a}\nfield double d\nend");
+    assert.throws(() => verifies("constant int32 a 1\nobject o\nconstant struct s {f: a}\nend"), Error);
+    verifies("constant int32 a 1\nconstant struct s {f: a}\nobject o\nproperty double p\nend");
+});
+
+test("reserved names are checked as in Core's VerifyName", () =>
+{
+    for (const b of ["struct Get_a\nfield double b\nend", "object o\nproperty double SET_x\nend", "object o\nfunction void Async_f()\nend",
+        "object o\nproperty double self\nend", "struct this\nfield double b\nend", "enum e\nMe = 1\nend"])
+    {
+        assert.throws(() => verifies(b), Error, b);
+    }
+    // Core does not check parameter names
+    verifies("object o\nfunction void f(double self, double Get_x)\nend");
 });
 
 test("validators reject semantic errors", () =>
@@ -197,6 +235,8 @@ test("validators reject semantic errors", () =>
         "struct a\nfield string[] b\nend",
         "constant int8 c 500",
         "constant double c abc",
+        "constant toString c 5",
+        "constant constructor c 5",
         'constant string c "bad\\q"',
         "pod a\nfield double[] b\nend",
         "pod a\nfield string b\nend",
